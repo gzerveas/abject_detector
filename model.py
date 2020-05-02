@@ -1,11 +1,9 @@
 from __future__ import absolute_import
 
-import torch
-import torch.nn as nn
 import math
-
-from .DCNv2.dcn_v2 import DCN
 from torch import nn
+from .DCNv2.dcn_v2 import DCN
+
 
 BN_MOMENTUM = 0.1
 
@@ -20,6 +18,7 @@ def fill_up_weights(layer):
             w[0, 0, i, j] = (1 - math.fabs(i / f - c)) * (1 - math.fabs(j / f - c))
     for c in range(1, w.size(0)):
         w[c, 0, :, :] = w[0, 0, :, :] 
+
 
 def fill_fc_weights(layers):
     """Custom function for initializing output layers"""
@@ -42,14 +41,14 @@ class ResBlock(nn.Module):
         self.relu = nn.ReLU(inplace=True)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(out_channels, momentum=BN_MOMENTUM)
-        
-        if stride != 1 or in_channels != out_channels: # transform input to match residual dimensions
+
+        # If necessary, transform input to match residual dimensions
+        if stride != 1 or in_channels != out_channels:
             self.downsample = nn.Sequential(
                             nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
                             nn.BatchNorm2d(out_channels, momentum=BN_MOMENTUM))
         else:
             self.downsample = None
-        
 
     def forward(self, x):
         if self.downsample is not None:
@@ -93,22 +92,21 @@ class TranspConvBlock(nn.Module):
         self.bn2 = nn.BatchNorm2d(out_channels, momentum=BN_MOMENTUM)
         self.relu = nn.ReLU(inplace=True)
 
+    def forward(self, x):
 
-        def forward(self, x):
-            
-            out = self.fc(x)
-            out = self.bn1(out)
-            out = self.relu(out)
-            out = self.up(out)
-            out = self.bn2(out)
-            out = self.relu(out)
+        out = self.fc(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.up(out)
+        out = self.bn2(out)
+        out = self.relu(out)
 
-            return out
+        return out
 
 
 class DCN_Detector(nn.Module):
 
-    def __init__(self, layers, heads, head_conv):
+    def __init__(self, heads):
         self.in_channels = 64  # number of output channels produced by the entry block
         self.heads = heads
         self.deconv_with_bias = False
@@ -125,16 +123,17 @@ class DCN_Detector(nn.Module):
         self.block1 = ResBlock(self.in_channels, 64, stride=1)
         self.block2 = ResBlock(64, 128, stride=2)
         self.block3 = ResBlock(128, 256, stride=2)
+        # self.block4 = ResBlock(256, 512, stride=2)
 
-        self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
-
-        self.upsample1 = TranspConvBlock(256, )
-        self.deconv_layers = self._make_deconv_layer(3, [256, 128, 64], [4, 4, 4])
+        # Upsampling blocks (Deformable conv + transposed conv)
+        # self.upsample0 = TranspConvBlock(512, 256, upsample_factor=2, bias=False)
+        self.upsample1 = TranspConvBlock(256, 128, upsample_factor=2, bias=False)
+        self.upsample2 = TranspConvBlock(128, 64, upsample_factor=2, bias=False)
 
         # Add one output layer per target
         for head in self.heads:
             classes = self.heads[head]
-            out_layer = nn.Conv2d(64, classes, kernel_size=1, stride=1, padding=0, bias=True)
+            out_layer = nn.Conv2d(64, classes, kernel_size=1, stride=1, padding=0, bias=True) # 1x1 conv
             if 'hm' in head:
                 out_layer.bias.data.fill_(-2.19)  # magic value for heatmap background
             else:
@@ -147,15 +146,16 @@ class DCN_Detector(nn.Module):
         x = self.relu(x)
         x = self.maxpool(x)
 
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
+        x = self.block1(x)
+        x = self.block2(x)
+        x = self.block3(x)
 
-        x = self.deconv_layers(x)
-        ret = {}
+        x = self.upsample1(x)
+        x = self.upsample2(x)
+
+        out = {}
         for head in self.heads:
-            ret[head] = self.__getattr__(head)(x)
-        return [ret]
+            out[head] = self.__getattr__(head)(x)
+        return [out]
 
 
