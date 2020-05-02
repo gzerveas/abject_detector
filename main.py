@@ -46,10 +46,16 @@ parser.add_argument('--no_timestamp', action='store_true',
 parser.add_argument('--records_file', default='/gpfs/data/ceickhof/GAILA/records.xls',
                     help='Excel file keeping all records of experiments')
 # Training
-parser.add_argument('--epochs', type=int, default=100,
-                    help='Number of training epochs')
+parser.add_argument('--gpu', type=str, default='0', 
+                    help='GPU index, -1 for CPU')
 parser.add_argument('--num_workers', type=int, default=4,
                     help='dataloader threads. 0 for single-thread.')
+parser.add_argument('--epochs', type=int, default=100,
+                    help='Number of training epochs')
+parser.add_argument('--lr', type=float, default=1.25e-4, 
+                             help='learning rate for batch size 32.')
+parser.add_argument('--lr_step', type=str, default='90,120',
+                             help='Comma separated string of epochs when to reduce learning rate by a factor of 10')
 parser.add_argument('--batch_size', type=int, default=10,
                     help='Training batch size')
 parser.add_argument('--img_size', type=int, default=128,
@@ -59,7 +65,16 @@ parser.add_argument('--seed',
 
 args = parser.parse_args()
 
+NUM_CLASSES = 16
 
+if args.task == '3d':
+    heads = {'hm': NUM_CLASSES, 'dep': 1, 'rot': 8, 'dim': 3}
+    if args.reg_bbox:
+        heads.update({'wh': 2})
+    if args.reg_offset:
+        heads.update({'reg': 2})
+elif args.task == 'localization':
+    heads = {'hm': NUM_CLASSES, 'wh': 2}
 
 
 def setup(args):
@@ -117,8 +132,7 @@ def main():
 
     torch.manual_seed(config['seed'])
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpus_str
-    opt.device = torch.device('cuda' if opt.gpus[0] >= 0 else 'cpu')
+    device = torch.device('cuda' if (torch.cuda.is_available() and config['gpu'] != '-1') else 'cpu')
 
     # Create or load model
     # Fail early if something is amiss
@@ -127,7 +141,8 @@ def main():
     optimizer = torch.optim.Adam(my_model.parameters(), opt.lr)
     start_epoch = 0
     if args.load_model:
-        my_model, optimizer, start_epoch = load_model(my_model, args.load_model, optimizer, opt.resume, opt.lr, opt.lr_step)
+        my_model, optimizer, start_epoch = utils.load_model(my_model, args.load_model, optimizer, args.resume, args.lr, args.lr_step)
+    my_model.to(device)
 
     # Initialize data generators
     logger.info("Loading and preprocessing data ...")
